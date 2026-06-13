@@ -4,51 +4,75 @@ import joblib
 import tensorflow as tf
 import numpy as np
 
-# Load assets
+# Set page configuration
+st.set_page_config(page_title="NexForge Risk Triage", layout="wide")
+
+# Load models and metadata with caching to prevent reload issues
 @st.cache_resource
 def load_assets():
+    # Load the ColumnTransformer (preprocessor)
     p = joblib.load('preprocessor.pkl')
+    # Load Isolation Forest
     i = joblib.load('model_iso.pkl')
+    # Load Autoencoder
     a = tf.keras.models.load_model('model_autoencoder.keras')
+    # Load the 2,787 training feature names
     feats = joblib.load('feature_names.pkl')
     return p, i, a, feats
 
-preprocessor, iso_forest, autoencoder, feature_names = load_assets()
+# Initialize assets
+try:
+    preprocessor, iso_forest, autoencoder, feature_names = load_assets()
+except Exception as e:
+    st.error(f"Critical Error: Missing model files. {e}")
+    st.stop()
 
 st.title("🛡️ NexForge Risk Triage")
+st.markdown("Automated Risk Detection using Hybrid AI (Isolation Forest + Autoencoder).")
+
+# File Uploader
 uploaded_file = st.file_uploader("Upload Transaction CSV", type="csv")
 
 if uploaded_file is not None:
     try:
-        # 1. Read the file
+        # 1. Load Data
         df = pd.read_csv(uploaded_file)
         
-        # 2. Get the raw values (ignoring headers entirely)
-        # We only take the first 3161 columns available
-        data_values = df.values[:, :3161] 
-        
-        # 3. If the file has fewer than 3161 columns, pad it with zeros
-        if data_values.shape[1] < 3161:
-            padding = np.zeros((data_values.shape[0], 3161 - data_values.shape[1]))
-            data_values = np.hstack((data_values, padding))
+        # Remove label if present to ensure 'blind' prediction
+        if 'risk_level' in df.columns:
+            df = df.drop(columns=['risk_level'])
             
-        # 4. Transform using preprocessor
-        x_new = preprocessor.transform(data_values)
+        # 2. STRICT ALIGNMENT: 
+        # Force incoming data to have the exact 2,787 columns expected by the preprocessor
+        # .reindex() drops extra columns and fills missing ones with 0 automatically
+        df_aligned = df.reindex(columns=feature_names, fill_value=0)
         
-        # 5. Predict using Isolation Forest
+        # 3. Transform data using the aligned dataframe
+        x_new = preprocessor.transform(df_aligned)
+        
+        # 4. Hybrid Prediction Logic
+        # A) Isolation Forest Prediction
         iso_pred = iso_forest.predict(x_new)
         
-        # 6. Predict using Autoencoder
+        # B) Autoencoder Reconstruction Error (Mean Squared Error)
         reconstructed = autoencoder.predict(x_new)
         mse = np.mean(np.power(x_new - reconstructed, 2), axis=1)
+        
+        # Define threshold (90th percentile of errors = High Risk)
         threshold = np.percentile(mse, 90)
         
-        # 7. Final Alert
+        # C) Combine: High Risk if Isolation Forest flags (-1) OR Error > Threshold
         df['Risk_Alert'] = ["High Risk" if (pred == -1 or err > threshold) else "Safe" 
                             for pred, err in zip(iso_pred, mse)]
         
-        st.success("Analysis Complete!")
-        st.dataframe(df.head(10))
+        # 5. Output
+        st.success("Analysis Complete using Hybrid AI!")
+        st.dataframe(df.head(20)) # Show first 20 rows
+        
+        # Download Results
+        csv_data = df.to_csv(index=False).encode('utf-8')
+        st.download_button("Download Full Results", csv_data, "risk_analysis_results.csv", "text/csv")
         
     except Exception as e:
         st.error(f"Processing Error: {e}")
+        st.write("Ensure your CSV structure matches the training data format.")
