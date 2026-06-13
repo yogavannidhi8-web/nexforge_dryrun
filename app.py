@@ -26,3 +26,8 @@ if uploaded_file:
     # Show Results
     df['Risk_Alert'] = ["High" if x == -1 else "Safe" for x in iso_pred]
     st.write(df)
+
+def transform_data(data):
+    # Example: if your preprocessor was a scaler
+    # return (data - mean) / std
+    return data # Or apply the logic manually
