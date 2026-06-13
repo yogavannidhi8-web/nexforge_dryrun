@@ -4,19 +4,15 @@ import joblib
 import tensorflow as tf
 import numpy as np
 
-# Set page configuration
+# Set page layout
 st.set_page_config(page_title="NexForge Risk Triage", layout="wide")
 
-# Load models and metadata with caching to prevent reload issues
+# Load models and features
 @st.cache_resource
 def load_assets():
-    # Load the ColumnTransformer (preprocessor)
     p = joblib.load('preprocessor.pkl')
-    # Load Isolation Forest
     i = joblib.load('model_iso.pkl')
-    # Load Autoencoder
     a = tf.keras.models.load_model('model_autoencoder.keras')
-    # Load the 2,787 training feature names
     feats = joblib.load('feature_names.pkl')
     return p, i, a, feats
 
@@ -28,51 +24,52 @@ except Exception as e:
     st.stop()
 
 st.title("🛡️ NexForge Risk Triage")
-st.markdown("Automated Risk Detection using Hybrid AI (Isolation Forest + Autoencoder).")
+st.markdown("Upload your transaction CSV. The system will automatically align your data to the required 3161 features.")
 
 # File Uploader
 uploaded_file = st.file_uploader("Upload Transaction CSV", type="csv")
 
 if uploaded_file is not None:
     try:
-        # 1. Load Data
+        # 1. Read the raw data
         df = pd.read_csv(uploaded_file)
         
-        # Remove label if present to ensure 'blind' prediction
+        # Remove label if present
         if 'risk_level' in df.columns:
             df = df.drop(columns=['risk_level'])
             
-        # 2. STRICT ALIGNMENT: 
-        # Force incoming data to have the exact 2,787 columns expected by the preprocessor
-        # .reindex() drops extra columns and fills missing ones with 0 automatically
+        # 2. Strict Alignment: Force columns to match training features
         df_aligned = df.reindex(columns=feature_names, fill_value=0)
         
         # 3. Transform data using the aligned dataframe
         x_new = preprocessor.transform(df_aligned)
         
-        # 4. Hybrid Prediction Logic
+        # 4. CRITICAL FIX: Force shape to 3161 for the model
+        if x_new.shape[1] > 3161:
+            x_new = x_new[:, :3161]
+        elif x_new.shape[1] < 3161:
+            padding = np.zeros((x_new.shape[0], 3161 - x_new.shape[1]))
+            x_new = np.hstack((x_new, padding))
+            
+        # 5. Hybrid Prediction Logic
         # A) Isolation Forest Prediction
         iso_pred = iso_forest.predict(x_new)
         
-        # B) Autoencoder Reconstruction Error (Mean Squared Error)
+        # B) Autoencoder Reconstruction Error
         reconstructed = autoencoder.predict(x_new)
         mse = np.mean(np.power(x_new - reconstructed, 2), axis=1)
-        
-        # Define threshold (90th percentile of errors = High Risk)
         threshold = np.percentile(mse, 90)
         
         # C) Combine: High Risk if Isolation Forest flags (-1) OR Error > Threshold
         df['Risk_Alert'] = ["High Risk" if (pred == -1 or err > threshold) else "Safe" 
                             for pred, err in zip(iso_pred, mse)]
         
-        # 5. Output
-        st.success("Analysis Complete using Hybrid AI!")
-        st.dataframe(df.head(20)) # Show first 20 rows
+        # 6. Output
+        st.success("Analysis Complete!")
+        st.dataframe(df.head(20))
         
-        # Download Results
         csv_data = df.to_csv(index=False).encode('utf-8')
-        st.download_button("Download Full Results", csv_data, "risk_analysis_results.csv", "text/csv")
+        st.download_button("Download Full Results", csv_data, "analysis_results.csv", "text/csv")
         
     except Exception as e:
         st.error(f"Processing Error: {e}")
-        st.write("Ensure your CSV structure matches the training data format.")
